@@ -225,6 +225,22 @@ impl Agent {
             }
         }
 
+        if registry.get("ToolSearch").is_some() {
+            let searchable_tools = registry
+                .all()
+                .into_iter()
+                .filter(|tool| tool.name() != "ToolSearch")
+                .map(|tool| crate::tools::toolsearch::ToolInfo {
+                    name: tool.name().to_string(),
+                    description: tool.description().to_string(),
+                    input_schema: tool.input_schema_json(),
+                })
+                .collect();
+            registry.register_replace(Arc::new(crate::tools::toolsearch::ToolSearchTool::new(
+                searchable_tools,
+            )));
+        }
+
         let session_id = uuid::Uuid::new_v4().to_string();
 
         Ok(Self {
@@ -411,5 +427,58 @@ impl Agent {
             snapshot.register(tool);
         }
         snapshot
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use serde_json::json;
+
+    struct PostgresTool;
+
+    #[async_trait]
+    impl Tool for PostgresTool {
+        fn name(&self) -> &str {
+            "mcp__server__query__binding"
+        }
+
+        fn description(&self) -> &str {
+            "MCP · Postgres · query — Query a Postgres database"
+        }
+
+        fn input_schema(&self) -> ToolInputSchema {
+            ToolInputSchema::default()
+        }
+
+        async fn call(
+            &self,
+            _input: Value,
+            _context: &ToolUseContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::text("ok"))
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_search_indexes_custom_tools_after_registration() {
+        let agent = Agent::new(AgentOptions {
+            custom_tools: vec![Arc::new(PostgresTool)],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let tool_search = agent.registry.get("ToolSearch").unwrap();
+
+        let result = tool_search
+            .call(
+                json!({"query": "postgres"}),
+                &ToolUseContext::new("/tmp".to_string()),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.get_text().contains("mcp__server__query__binding"));
     }
 }

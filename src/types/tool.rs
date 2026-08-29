@@ -176,6 +176,11 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn input_schema(&self) -> ToolInputSchema;
 
+    fn input_schema_json(&self) -> Value {
+        serde_json::to_value(self.input_schema())
+            .expect("ToolInputSchema must always serialize to JSON")
+    }
+
     async fn call(&self, input: Value, context: &ToolUseContext) -> Result<ToolResult, ToolError>;
 
     fn is_read_only(&self, _input: &Value) -> bool {

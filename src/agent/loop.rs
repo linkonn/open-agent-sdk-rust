@@ -34,18 +34,7 @@ pub(crate) async fn run_loop(
         context::build_system_blocks(cwd, system_prompt, append_system_prompt, skills_summary);
 
     // Build tool definitions for API
-    let api_tools: Vec<ApiToolParam> = registry
-        .all()
-        .iter()
-        .map(|tool| {
-            let schema = tool.input_schema();
-            ApiToolParam {
-                name: tool.name().to_string(),
-                description: tool.description().to_string(),
-                input_schema: serde_json::to_value(&schema).unwrap_or_default(),
-            }
-        })
-        .collect();
+    let api_tools = build_api_tools(&registry);
 
     let retry_config = retry::RetryConfig::default();
     let mut num_turns: u32 = 0;
@@ -235,4 +224,71 @@ pub(crate) async fn run_loop(
         .await;
 
     Ok(messages)
+}
+
+fn build_api_tools(registry: &ToolRegistry) -> Vec<ApiToolParam> {
+    registry
+        .all()
+        .iter()
+        .map(|tool| ApiToolParam {
+            name: tool.name().to_string(),
+            description: tool.description().to_string(),
+            input_schema: tool.input_schema_json(),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+
+    struct RawSchemaTool;
+
+    #[async_trait]
+    impl Tool for RawSchemaTool {
+        fn name(&self) -> &str {
+            "RawSchema"
+        }
+
+        fn description(&self) -> &str {
+            "Preserves the original JSON schema"
+        }
+
+        fn input_schema(&self) -> ToolInputSchema {
+            ToolInputSchema::default()
+        }
+
+        fn input_schema_json(&self) -> Value {
+            json!({
+                "type": "object",
+                "$defs": {"identifier": {"type": "string"}},
+                "oneOf": [
+                    {"required": ["id"]},
+                    {"required": ["name"]}
+                ]
+            })
+        }
+
+        async fn call(
+            &self,
+            _input: Value,
+            _context: &ToolUseContext,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::text("ok"))
+        }
+    }
+
+    #[test]
+    fn api_tools_use_raw_json_schema() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(RawSchemaTool));
+
+        let tools = build_api_tools(&registry);
+
+        assert_eq!(tools.len(), 1);
+        assert!(tools[0].input_schema.get("$defs").is_some());
+        assert!(tools[0].input_schema.get("oneOf").is_some());
+    }
 }

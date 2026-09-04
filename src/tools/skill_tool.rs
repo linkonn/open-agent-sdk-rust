@@ -102,8 +102,8 @@ impl Tool for SkillTool {
         let content = substitute_variables(&skill.content, arguments, &skill_dir);
 
         let result = format!(
-            "[SKILL INSTRUCTIONS - You MUST follow these instructions precisely]\n\n{}\n\n[END SKILL INSTRUCTIONS]",
-            content
+            "Skill directory: {}\n\n[SKILL INSTRUCTIONS - You MUST follow these instructions precisely]\n\n{}\n\n[END SKILL INSTRUCTIONS]",
+            skill_dir, content
         );
 
         Ok(ToolResult::text(result))

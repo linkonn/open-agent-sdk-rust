@@ -106,6 +106,12 @@ pub enum ApiError {
 
     #[error("Request timeout")]
     Timeout,
+
+    #[error("Stream timeout during {phase} after {timeout_secs}s")]
+    StreamTimeout { phase: String, timeout_secs: u64 },
+
+    #[error("Stream interrupted: {0}")]
+    StreamInterrupted(String),
 }
 
 /// API client that auto-detects and delegates to the correct provider.

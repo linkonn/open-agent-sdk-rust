@@ -81,6 +81,17 @@ impl SkillSource {
             SkillSource::Project => "project",
         }
     }
+
+    /// Runtime source priority. Lower values win when names collide.
+    pub fn load_priority(&self) -> u8 {
+        match self {
+            SkillSource::AQBot => 0,
+            SkillSource::Claude => 1,
+            SkillSource::Agents => 2,
+            SkillSource::Codex => 3,
+            SkillSource::Project => 4,
+        }
+    }
 }
 
 /// A fully loaded skill with parsed metadata and content.

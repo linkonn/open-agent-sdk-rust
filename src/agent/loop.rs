@@ -29,9 +29,22 @@ pub(crate) async fn run_loop(
 ) -> Result<Vec<Message>, String> {
     let tool_context = ToolUseContext::with_shell(cwd.to_string(), abort_signal, shell_binary);
 
-    // Build system prompt blocks
-    let system_blocks =
-        context::build_system_blocks(cwd, system_prompt, append_system_prompt, skills_summary);
+    let _ = tx
+        .send(SDKMessage::Stage {
+            stage: "preparing_context".to_string(),
+            retry_attempt: None,
+            retry_wait_ms: None,
+        })
+        .await;
+    let system_blocks = context::build_system_blocks(
+        cwd,
+        system_prompt,
+        append_system_prompt,
+        skills_summary,
+        &tool_context.abort_signal,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
 
     // Build tool definitions for API
     let api_tools = build_api_tools(&registry);
@@ -100,18 +113,33 @@ pub(crate) async fn run_loop(
         let start = std::time::Instant::now();
 
         let response = tokio::select! {
-            response = retry::with_retry(&retry_config, || async {
-                api_client_ref
-                    .create_message(
-                        &normalized,
-                        Some(system_blocks_ref.clone()),
-                        Some(api_tools_ref.clone()),
-                        max_tokens,
-                        thinking_ref.clone(),
-                        Some(tx.clone()),
-                    )
-                    .await
-            }) => response,
+            response = retry::with_retry_notified(
+                &retry_config,
+                |attempt, delay| {
+                    let tx = tx.clone();
+                    async move {
+                        let _ = tx
+                            .send(SDKMessage::Stage {
+                                stage: String::new(),
+                                retry_attempt: Some(attempt),
+                                retry_wait_ms: Some(delay.as_millis() as u64),
+                            })
+                            .await;
+                    }
+                },
+                || async {
+                    api_client_ref
+                        .create_message(
+                            &normalized,
+                            Some(system_blocks_ref.clone()),
+                            Some(api_tools_ref.clone()),
+                            max_tokens,
+                            thinking_ref.clone(),
+                            Some(tx.clone()),
+                        )
+                        .await
+                },
+            ) => response,
             _ = tool_context.abort_signal.cancelled() => {
                 return Err("Agent cancelled".to_string());
             }

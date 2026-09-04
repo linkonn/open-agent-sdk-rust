@@ -55,13 +55,25 @@ pub fn get_retry_delay(config: &RetryConfig, attempt: u32) -> Duration {
 }
 
 /// Execute an async function with retry logic.
-pub async fn with_retry<F, Fut, T>(
+pub async fn with_retry<F, Fut, T>(config: &RetryConfig, f: F) -> Result<T, ApiError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, ApiError>>,
+{
+    with_retry_notified(config, |_attempt, _delay| async {}, f).await
+}
+
+/// Execute an async function with retry logic and a retry-wait notifier.
+pub async fn with_retry_notified<F, Fut, T, N, NFut>(
     config: &RetryConfig,
+    mut on_retry: N,
     mut f: F,
 ) -> Result<T, ApiError>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, ApiError>>,
+    N: FnMut(u32, Duration) -> NFut,
+    NFut: std::future::Future<Output = ()>,
 {
     let mut last_error = None;
 
@@ -81,6 +93,7 @@ where
                     error,
                     delay
                 );
+                on_retry(attempt + 1, delay).await;
                 tokio::time::sleep(delay).await;
                 last_error = Some(error);
             }

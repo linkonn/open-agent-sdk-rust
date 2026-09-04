@@ -155,6 +155,15 @@ pub enum SDKMessage {
     #[serde(rename = "status")]
     Status { message: String },
 
+    #[serde(rename = "stage")]
+    Stage {
+        stage: String,
+        #[serde(default)]
+        retry_attempt: Option<u32>,
+        #[serde(default)]
+        retry_wait_ms: Option<u64>,
+    },
+
     #[serde(rename = "task_notification")]
     TaskNotification {
         task_id: String,

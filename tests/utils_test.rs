@@ -241,6 +241,13 @@ fn test_is_retryable() {
     assert!(!retry::is_retryable(&ApiError::PromptTooLong(
         "too long".to_string()
     )));
+    assert!(!retry::is_retryable(&ApiError::StreamTimeout {
+        phase: "first_packet".to_string(),
+        timeout_secs: 180,
+    }));
+    assert!(!retry::is_retryable(&ApiError::StreamInterrupted(
+        "provider closed".to_string()
+    )));
 }
 
 #[test]

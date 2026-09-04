@@ -2,6 +2,27 @@ use std::path::{Path, PathBuf};
 
 use crate::types::skill::{LoadedSkill, SkillMetadata, SkillSource};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillScanError {
+    pub path: PathBuf,
+    pub code: &'static str,
+    pub message: String,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
+}
+
+#[derive(Debug, Default)]
+pub struct SkillWalk {
+    pub skills: Vec<LoadedSkill>,
+    pub errors: Vec<SkillScanError>,
+}
+
+enum SkillDirClass {
+    Skill(LoadedSkill),
+    Group,
+    Failed(SkillScanError),
+}
+
 fn is_hidden_dir(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -12,37 +33,89 @@ fn is_hidden_dir(path: &Path) -> bool {
 /// Parse a SKILL.md file into (metadata, markdown_body).
 /// Frontmatter is delimited by `---` lines at the start of the file.
 pub fn parse_skill_file(content: &str) -> Option<(SkillMetadata, String)> {
+    parse_skill_file_detailed(content).ok()
+}
+
+pub fn parse_skill_file_detailed(content: &str) -> Result<(SkillMetadata, String), SkillScanError> {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {
-        return None;
+        return Err(SkillScanError {
+            path: PathBuf::new(),
+            code: "parse_failed",
+            message: "SKILL.md is missing YAML frontmatter".to_string(),
+            line: None,
+            column: None,
+        });
     }
 
-    // Find the closing `---`
     let after_first = &trimmed[3..];
     let rest = after_first.trim_start_matches(['\r', '\n']);
-    let end_idx = rest.find("\n---")?;
+    let end_idx = rest.find("\n---").ok_or_else(|| SkillScanError {
+        path: PathBuf::new(),
+        code: "parse_failed",
+        message: "SKILL.md is missing a closing frontmatter delimiter".to_string(),
+        line: None,
+        column: None,
+    })?;
     let yaml_str = &rest[..end_idx];
-    let after_closing = &rest[end_idx + 4..]; // skip "\n---"
+    let after_closing = &rest[end_idx + 4..];
     let body = after_closing.trim_start_matches(['\r', '\n']).to_string();
 
-    let metadata: SkillMetadata = serde_yaml::from_str(yaml_str).ok()?;
-    Some((metadata, body))
+    match serde_yaml::from_str::<SkillMetadata>(yaml_str) {
+        Ok(metadata) => Ok((metadata, body)),
+        Err(error) => {
+            let (line, column) = error
+                .location()
+                .map(|loc| (Some(loc.line()), Some(loc.column())))
+                .unwrap_or((None, None));
+            Err(SkillScanError {
+                path: PathBuf::new(),
+                code: "parse_failed",
+                message: error.to_string(),
+                line,
+                column,
+            })
+        }
+    }
 }
 
 /// Load a single skill from a directory containing SKILL.md.
 pub fn load_skill_from_dir(dir: &Path, source: SkillSource) -> Option<LoadedSkill> {
-    let skill_file = dir.join("SKILL.md");
-    let content = std::fs::read_to_string(&skill_file).ok()?;
-    let (metadata, body) = parse_skill_file(&content)?;
+    load_skill_from_dir_detailed(dir, source).ok()
+}
 
-    let name = metadata.name.clone();
-    let name = if name.is_empty() {
-        dir.file_name()?.to_string_lossy().to_string()
+pub fn load_skill_from_dir_detailed(
+    dir: &Path,
+    source: SkillSource,
+) -> Result<LoadedSkill, SkillScanError> {
+    let skill_file = dir.join("SKILL.md");
+    let content = std::fs::read_to_string(&skill_file).map_err(|error| SkillScanError {
+        path: skill_file.clone(),
+        code: "unreadable",
+        message: error.to_string(),
+        line: None,
+        column: None,
+    })?;
+    let (metadata, body) = parse_skill_file_detailed(&content).map_err(|mut error| {
+        error.path = skill_file.clone();
+        error
+    })?;
+
+    let name = if metadata.name.is_empty() {
+        dir.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .ok_or_else(|| SkillScanError {
+                path: skill_file.clone(),
+                code: "parse_failed",
+                message: "Skill directory name is missing".to_string(),
+                line: None,
+                column: None,
+            })?
     } else {
-        name
+        metadata.name.clone()
     };
 
-    Some(LoadedSkill {
+    Ok(LoadedSkill {
         name,
         path: skill_file,
         metadata,
@@ -52,65 +125,82 @@ pub fn load_skill_from_dir(dir: &Path, source: SkillSource) -> Option<LoadedSkil
     })
 }
 
-/// Scan all subdirectories of `parent_dir` for SKILL.md files.
-pub fn load_from_dir(parent_dir: &Path, source: SkillSource) -> Vec<LoadedSkill> {
+fn classify_skill_dir(dir: &Path, source: SkillSource) -> SkillDirClass {
+    let skill_file = dir.join("SKILL.md");
+    if !skill_file.exists() {
+        return SkillDirClass::Group;
+    }
+    match load_skill_from_dir_detailed(dir, source) {
+        Ok(skill) => SkillDirClass::Skill(skill),
+        Err(error) => SkillDirClass::Failed(error),
+    }
+}
+
+fn sorted_child_dirs(parent_dir: &Path) -> Vec<PathBuf> {
     let entries = match std::fs::read_dir(parent_dir) {
-        Ok(e) => e,
+        Ok(entries) => entries,
         Err(_) => return Vec::new(),
     };
+    let mut dirs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && !is_hidden_dir(path))
+        .collect();
+    dirs.sort();
+    dirs
+}
 
-    let mut skills = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() && !is_hidden_dir(&path) {
-            if let Some(skill) = load_skill_from_dir(&path, source.clone()) {
-                skills.push(skill);
-            } else {
-                // No SKILL.md — treat as a group container and recurse
-                let group_name = match path.file_name() {
-                    Some(n) => n.to_string_lossy().to_string(),
-                    None => continue,
+/// Scan all subdirectories of `parent_dir` for SKILL.md files.
+pub fn load_from_dir(parent_dir: &Path, source: SkillSource) -> Vec<LoadedSkill> {
+    walk_from_dir(parent_dir, source).skills
+}
+
+pub fn walk_from_dir(parent_dir: &Path, source: SkillSource) -> SkillWalk {
+    let mut walk = SkillWalk::default();
+    for path in sorted_child_dirs(parent_dir) {
+        match classify_skill_dir(&path, source.clone()) {
+            SkillDirClass::Skill(skill) => walk.skills.push(skill),
+            SkillDirClass::Failed(error) => walk.errors.push(error),
+            SkillDirClass::Group => {
+                let Some(group_name) = path.file_name().map(|name| name.to_string_lossy().into_owned()) else {
+                    continue;
                 };
-                let mut group_skills = Vec::new();
-                collect_skills_recursive(&path, source.clone(), &mut group_skills, 0, 3);
-                for mut skill in group_skills {
+                let mut nested = SkillWalk::default();
+                collect_skills_recursive(&path, source.clone(), &mut nested, 0, 3);
+                for mut skill in nested.skills {
                     skill.group = Some(group_name.clone());
-                    skills.push(skill);
+                    walk.skills.push(skill);
                 }
+                walk.errors.extend(nested.errors);
             }
         }
     }
-    skills
+    walk
 }
 
 /// Recursively collect skills from nested directories up to `max_depth`.
 fn collect_skills_recursive(
     dir: &Path,
     source: SkillSource,
-    skills: &mut Vec<LoadedSkill>,
+    walk: &mut SkillWalk,
     depth: u32,
     max_depth: u32,
 ) {
     if depth >= max_depth {
         return;
     }
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() && !is_hidden_dir(&path) {
-            if let Some(skill) = load_skill_from_dir(&path, source.clone()) {
-                skills.push(skill);
-            } else {
-                collect_skills_recursive(&path, source.clone(), skills, depth + 1, max_depth);
+    for path in sorted_child_dirs(dir) {
+        match classify_skill_dir(&path, source.clone()) {
+            SkillDirClass::Skill(skill) => walk.skills.push(skill),
+            SkillDirClass::Failed(error) => walk.errors.push(error),
+            SkillDirClass::Group => {
+                collect_skills_recursive(&path, source.clone(), walk, depth + 1, max_depth);
             }
         }
     }
 }
 
-fn global_skill_dirs(home_dir: &Path) -> Vec<(PathBuf, SkillSource)> {
+pub(crate) fn global_skill_dirs(home_dir: &Path) -> Vec<(PathBuf, SkillSource)> {
     vec![
         (home_dir.join(".aqbot").join("skills"), SkillSource::AQBot),
         (home_dir.join(".claude").join("skills"), SkillSource::Claude),
@@ -139,10 +229,18 @@ pub fn load_all_global(home_dir: &Path) -> Vec<LoadedSkill> {
 
 /// Load all global skills without deduplication for management UIs.
 pub fn load_all_global_for_management(home_dir: &Path) -> Vec<LoadedSkill> {
-    global_skill_dirs(home_dir)
-        .into_iter()
-        .flat_map(|(dir, source)| load_from_dir(&dir, source))
-        .collect()
+    walk_all_global(home_dir).skills
+}
+
+/// Walk every global skill source in priority order without name dedup.
+pub fn walk_all_global(home_dir: &Path) -> SkillWalk {
+    let mut walk = SkillWalk::default();
+    for (dir, source) in global_skill_dirs(home_dir) {
+        let mut source_walk = walk_from_dir(&dir, source);
+        walk.skills.append(&mut source_walk.skills);
+        walk.errors.append(&mut source_walk.errors);
+    }
+    walk
 }
 
 /// Walk up from `cwd` looking for `.git/` or `.aqbot/` to detect the project root.

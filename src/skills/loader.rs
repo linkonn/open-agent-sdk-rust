@@ -122,6 +122,7 @@ pub fn load_skill_from_dir_detailed(
         content: body,
         source,
         group: None,
+        mapped_dir: None,
     })
 }
 
@@ -162,7 +163,10 @@ pub fn walk_from_dir(parent_dir: &Path, source: SkillSource) -> SkillWalk {
             SkillDirClass::Skill(skill) => walk.skills.push(skill),
             SkillDirClass::Failed(error) => walk.errors.push(error),
             SkillDirClass::Group => {
-                let Some(group_name) = path.file_name().map(|name| name.to_string_lossy().into_owned()) else {
+                let Some(group_name) = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                else {
                     continue;
                 };
                 let mut nested = SkillWalk::default();

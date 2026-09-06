@@ -3,8 +3,10 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use tokio::process::Command;
 
+use crate::skills::runtime::RUNTIME_DIR_NAME;
 use crate::tools::command_runner;
 use crate::types::{Tool, ToolError, ToolInputSchema, ToolResult, ToolUseContext};
+use std::path::{Path, PathBuf};
 
 const DEFAULT_HEAD_LIMIT: usize = 250;
 
@@ -133,6 +135,8 @@ impl Tool for GrepTool {
             .get("path")
             .and_then(|p| p.as_str())
             .unwrap_or(&context.working_dir);
+        let (command_path, rewrite) = resolve_search_path(search_path, &context.working_dir);
+        let exclude_runtime = !path_is_under_runtime(search_path);
 
         let output_mode = input
             .get("output_mode")
@@ -147,7 +151,7 @@ impl Tool for GrepTool {
         // Try rg first, fall back to grep
         let result = run_search(
             "rg",
-            &build_rg_args(pattern, search_path, output_mode, &input),
+            &build_rg_args(pattern, &command_path, output_mode, &input, exclude_runtime),
             &context,
             true, // rg uses exit code 1 for no matches
         )
@@ -155,6 +159,7 @@ impl Tool for GrepTool {
 
         match result {
             Ok(output) => {
+                let output = rewrite_search_output(output, rewrite.as_ref());
                 if output.is_empty() {
                     return Ok(ToolResult::text("No matches found.".to_string()));
                 }
@@ -178,7 +183,7 @@ impl Tool for GrepTool {
                 // Fall back to grep
                 let result = run_search(
                     "grep",
-                    &build_grep_args(pattern, search_path, output_mode, &input),
+                    &build_grep_args(pattern, &command_path, output_mode, &input, exclude_runtime),
                     &context,
                     true, // grep uses exit code 1 for no matches
                 )
@@ -186,6 +191,7 @@ impl Tool for GrepTool {
 
                 match result {
                     Ok(output) => {
+                        let output = rewrite_search_output(output, rewrite.as_ref());
                         if output.is_empty() {
                             Ok(ToolResult::text("No matches found.".to_string()))
                         } else {
@@ -235,7 +241,13 @@ async fn run_search(
     }
 }
 
-fn build_rg_args(pattern: &str, path: &str, output_mode: &str, input: &Value) -> Vec<String> {
+fn build_rg_args(
+    pattern: &str,
+    path: &str,
+    output_mode: &str,
+    input: &Value,
+    exclude_runtime: bool,
+) -> Vec<String> {
     let mut args = vec!["--no-heading".to_string()];
 
     match output_mode {
@@ -282,12 +294,23 @@ fn build_rg_args(pattern: &str, path: &str, output_mode: &str, input: &Value) ->
         args.push("--multiline-dotall".to_string());
     }
 
+    if exclude_runtime {
+        args.push("--glob".to_string());
+        args.push(format!("!{RUNTIME_DIR_NAME}/**"));
+    }
+
     args.push(pattern.to_string());
     args.push(path.to_string());
     args
 }
 
-fn build_grep_args(pattern: &str, path: &str, output_mode: &str, input: &Value) -> Vec<String> {
+fn build_grep_args(
+    pattern: &str,
+    path: &str,
+    output_mode: &str,
+    input: &Value,
+    exclude_runtime: bool,
+) -> Vec<String> {
     let mut args = vec!["-r".to_string()];
 
     match output_mode {
@@ -303,7 +326,44 @@ fn build_grep_args(pattern: &str, path: &str, output_mode: &str, input: &Value) 
         args.push("-i".to_string());
     }
 
+    if exclude_runtime {
+        args.push(format!("--exclude-dir={RUNTIME_DIR_NAME}"));
+    }
+
     args.push(pattern.to_string());
     args.push(path.to_string());
     args
+}
+
+fn resolve_search_path(path: &str, cwd: &str) -> (String, Option<(String, String)>) {
+    let absolute = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        Path::new(cwd).join(path)
+    };
+    let display = absolute.to_string_lossy().into_owned();
+    match absolute.canonicalize() {
+        Ok(canonical) => {
+            let canonical = canonical.to_string_lossy().into_owned();
+            if canonical == display {
+                (canonical, None)
+            } else {
+                (canonical.clone(), Some((canonical, display)))
+            }
+        }
+        Err(_) => (path.to_string(), None),
+    }
+}
+
+fn rewrite_search_output(output: String, rewrite: Option<&(String, String)>) -> String {
+    match rewrite {
+        Some((from, to)) => output.replace(from, to),
+        None => output,
+    }
+}
+
+fn path_is_under_runtime(path: &str) -> bool {
+    Path::new(path)
+        .components()
+        .any(|component| component.as_os_str() == RUNTIME_DIR_NAME)
 }

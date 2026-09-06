@@ -896,6 +896,46 @@ async fn test_glob_skips_heavy_directories_before_descending() {
 }
 
 #[tokio::test]
+async fn test_glob_skips_skill_runtime_and_nested_dir_links() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(workspace.join("app.rs"), "").unwrap();
+    let runtime = workspace.join(".aqbot-skills-runtime/session/demo");
+    std::fs::create_dir_all(&runtime).unwrap();
+    std::fs::write(runtime.join("skill.rs"), "").unwrap();
+    let outside = dir.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("secret.rs"), "").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, workspace.join("linked")).unwrap();
+
+    let registry = ToolRegistry::default_registry();
+    let glob = registry.get("Glob").unwrap();
+    let ctx = create_test_context(workspace.to_str().unwrap());
+    let result = glob
+        .call(json!({"pattern": "**/*.rs"}), &ctx)
+        .await
+        .unwrap();
+    let text = result.get_text();
+    assert!(text.contains("app.rs"));
+    assert!(!text.contains("skill.rs"));
+    assert!(!text.contains("secret.rs"));
+
+    let explicit = glob
+        .call(
+            json!({
+                "pattern": "**/*.rs",
+                "path": runtime.to_str().unwrap()
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(explicit.get_text().contains("skill.rs"));
+}
+
+#[tokio::test]
 async fn test_glob_returns_when_cancelled() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = create_test_context(dir.path().to_str().unwrap());
@@ -939,6 +979,44 @@ async fn test_grep_search() {
     assert!(!result.is_error);
     let text = result.get_text();
     assert!(text.contains("hello world") || text.contains("hello"));
+}
+
+#[tokio::test]
+async fn test_grep_rewrites_symlink_search_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let workspace = dir.path().join("workspace");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(source.join("guide.md"), "AQBOT_RUNTIME_PROBE\n").unwrap();
+    let alias = workspace.join(".aqbot-skills-runtime/session/demo");
+    std::fs::create_dir_all(alias.parent().unwrap()).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&source, &alias).unwrap();
+    #[cfg(not(unix))]
+    {
+        let _ = (source, alias);
+        return;
+    }
+
+    let registry = ToolRegistry::default_registry();
+    let grep = registry.get("Grep").unwrap();
+    let ctx = create_test_context(workspace.to_str().unwrap());
+    let result = grep
+        .call(
+            json!({
+                "pattern": "AQBOT_RUNTIME_PROBE",
+                "path": alias.to_str().unwrap(),
+                "output_mode": "content"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(!result.is_error);
+    let text = result.get_text();
+    assert!(text.contains("AQBOT_RUNTIME_PROBE"));
+    assert!(text.contains(alias.to_str().unwrap()));
 }
 
 // --- Task Tool Tests ---

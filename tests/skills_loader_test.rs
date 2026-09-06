@@ -1,4 +1,6 @@
-use open_agent_sdk::skills::{inspect_global_skills, load_all_global, load_from_dir, walk_from_dir};
+use open_agent_sdk::skills::{
+    inspect_global_skills, load_all_global, load_from_dir, walk_from_dir,
+};
 use open_agent_sdk::types::SkillSource;
 use std::collections::HashSet;
 
@@ -61,7 +63,10 @@ fn parse_failed_skill_is_scan_error_not_group() {
     write_skill(&broken.join("nested"), "nested");
 
     let walk = walk_from_dir(root.path(), SkillSource::AQBot);
-    assert!(walk.skills.is_empty(), "broken SKILL.md must not recurse as a group");
+    assert!(
+        walk.skills.is_empty(),
+        "broken SKILL.md must not recurse as a group"
+    );
     assert_eq!(walk.errors.len(), 1);
     assert_eq!(walk.errors[0].code, "parse_failed");
     assert!(walk.errors[0].line.is_some());
@@ -127,7 +132,10 @@ fn inspect_marks_override_and_disable_model_invocation() {
     assert!(aqbot.callable);
     assert!(!claude.effective);
     assert!(!claude.callable);
-    assert!(claude.reasons.iter().any(|reason| reason.code == "overridden"));
+    assert!(claude
+        .reasons
+        .iter()
+        .any(|reason| reason.code == "overridden"));
     assert!(manual.callable);
     assert!(manual
         .reasons
@@ -144,7 +152,8 @@ async fn skill_tool_result_includes_skill_directory() {
 
     let dir = tempfile::tempdir().unwrap();
     write_skill(dir.path(), "demo");
-    let skill = open_agent_sdk::skills::load_skill_from_dir(dir.path(), SkillSource::AQBot).unwrap();
+    let skill =
+        open_agent_sdk::skills::load_skill_from_dir(dir.path(), SkillSource::AQBot).unwrap();
     let mut registry = SkillRegistry::new();
     registry.register(skill);
     let tool = SkillTool::new(Arc::new(tokio::sync::RwLock::new(registry)));
@@ -157,6 +166,35 @@ async fn skill_tool_result_includes_skill_directory() {
         .unwrap();
     let text = result.get_text();
     assert!(text.contains(&format!("Skill directory: {}", dir.path().display())));
+}
+
+#[tokio::test]
+async fn skill_tool_result_uses_mapped_directory() {
+    use open_agent_sdk::skills::SkillRegistry;
+    use open_agent_sdk::tools::skill_tool::SkillTool;
+    use open_agent_sdk::types::{Tool, ToolUseContext};
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mapped_root = tempfile::tempdir().unwrap();
+    write_skill(dir.path(), "demo");
+    let mut skill =
+        open_agent_sdk::skills::load_skill_from_dir(dir.path(), SkillSource::AQBot).unwrap();
+    let mapped = mapped_root.path().join("mapped-demo");
+    skill.mapped_dir = Some(mapped.clone());
+    let mut registry = SkillRegistry::new();
+    registry.register(skill);
+    let tool = SkillTool::new(Arc::new(tokio::sync::RwLock::new(registry)));
+    let result = tool
+        .call(
+            serde_json::json!({"skill_name": "demo"}),
+            &ToolUseContext::new(dir.path().to_string_lossy().into_owned()),
+        )
+        .await
+        .unwrap();
+    let text = result.get_text();
+    assert!(text.contains(&format!("Skill directory: {}", mapped.display())));
+    assert!(!text.contains(&format!("Skill directory: {}", dir.path().display())));
 }
 
 #[test]

@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::skills::SkillRegistry;
 use crate::skills::loader::substitute_variables;
+use crate::skills::SkillRegistry;
 use crate::types::{Tool, ToolError, ToolInputSchema, ToolResult, ToolUseContext};
 
 pub struct SkillTool {
@@ -56,11 +56,7 @@ impl Tool for SkillTool {
         true
     }
 
-    async fn call(
-        &self,
-        input: Value,
-        _context: &ToolUseContext,
-    ) -> Result<ToolResult, ToolError> {
+    async fn call(&self, input: Value, _context: &ToolUseContext) -> Result<ToolResult, ToolError> {
         let skill_name = input
             .get("skill_name")
             .and_then(|v| v.as_str())
@@ -94,9 +90,15 @@ impl Tool for SkillTool {
         }
 
         let skill_dir = skill
-            .path
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
+            .mapped_dir
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .or_else(|| {
+                skill
+                    .path
+                    .parent()
+                    .map(|path| path.to_string_lossy().into_owned())
+            })
             .unwrap_or_default();
 
         let content = substitute_variables(&skill.content, arguments, &skill_dir);

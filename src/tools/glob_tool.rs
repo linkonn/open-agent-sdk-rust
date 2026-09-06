@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::skills::runtime::{is_dir_link, RUNTIME_DIR_NAME};
 use crate::types::{Tool, ToolError, ToolInputSchema, ToolResult, ToolUseContext};
 
 const MAX_RESULTS: usize = 100;
@@ -20,6 +21,7 @@ const SKIP_DIRS: &[&str] = &[
     "target",
     "dist",
     "build",
+    RUNTIME_DIR_NAME,
 ];
 
 pub struct GlobTool;
@@ -231,8 +233,8 @@ fn scan_files(
         for entry in entries.flatten() {
             visited += 1;
             let path = entry.path();
-            if path.is_dir() {
-                if should_skip_dir(&path) {
+            if is_directory(&path) {
+                if should_skip_dir(&path) || is_dir_link(&path) {
                     continue;
                 }
                 if max_depth.map_or(true, |limit| depth + 1 < limit) {
@@ -271,4 +273,10 @@ fn should_skip_dir(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| SKIP_DIRS.contains(&name))
+}
+
+fn is_directory(path: &Path) -> bool {
+    path.symlink_metadata()
+        .map(|meta| meta.is_dir() || (meta.file_type().is_symlink() && path.is_dir()))
+        .unwrap_or(false)
 }

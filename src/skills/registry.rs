@@ -59,6 +59,12 @@ impl SkillRegistry {
             .collect()
     }
 
+    pub fn apply_mapped_dirs(&mut self, runtime: &crate::skills::runtime::SkillRuntimeMap) {
+        for skill in self.skills.values_mut() {
+            skill.mapped_dir = runtime.mapped_dir_for(&skill.name);
+        }
+    }
+
     /// Generate a summary for system prompt injection (auto-invocable skills only).
     pub fn generate_context_summary(&self) -> String {
         let skills = self.auto_invocable();
@@ -84,7 +90,9 @@ impl SkillRegistry {
         summary.push_str(
             "\nWhen a skill matches the user's request, invoke it using the Skill tool. \
              When the Skill tool returns instructions, treat them as mandatory operational \
-             procedures, not as optional reference material. Follow the instructions step by step.\n",
+             procedures, not as optional reference material. Follow the instructions step by step.\n\
+             Current skill names and resource paths apply to this turn only. \
+             To keep using a skill, invoke the Skill tool again and use the directory it returns.\n",
         );
         summary
     }
@@ -134,6 +142,7 @@ mod tests {
             content: String::new(),
             source: SkillSource::AQBot,
             group: None,
+            mapped_dir: None,
         }
     }
 
@@ -200,5 +209,6 @@ mod tests {
         assert!(registry.get("hidden").is_some());
         assert_eq!(registry.all_enabled().len(), 2);
         assert_eq!(registry.auto_invocable().len(), 1);
+        assert!(summary.contains("Current skill names and resource paths apply to this turn only"));
     }
 }

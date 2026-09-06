@@ -105,4 +105,6 @@ pub struct LoadedSkill {
     pub source: SkillSource,
     /// If this skill is part of a group/collection, the group name
     pub group: Option<String>,
+    /// Workspace mapping created for the current built-in Agent turn.
+    pub mapped_dir: Option<PathBuf>,
 }
